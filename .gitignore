@@ -1,0 +1,16 @@
+# Ignore user-specific and temporary files
+# Prevent pushing plan and temp text files
+*.md
+*.txt
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+env/
+venv/
+*.egg-info/
+
+# Data and models (keep these local unless you explicitly want to push them)
+data/raw/
+data/processed/
+models/
