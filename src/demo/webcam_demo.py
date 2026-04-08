@@ -125,24 +125,32 @@ def landmarks_to_pixels(landmarks, w, h):
     return pts
 
 
-def fingers_up(landmarks):
-    # landmarks: list of 21 (x,y,z) normalized
-    # tips = 4,8,12,16,20; pip = 3,6,10,14,18
-    tips = [4, 8, 12, 16, 20]
-    pips = [3, 6, 10, 14, 18]
-    up = [False] * 5
-    for i, (t, p) in enumerate(zip(tips, pips)):
-        # For fingers except thumb, tip.y < pip.y means finger is up (image coords origin top-left)
-        if landmarks[t][1] < landmarks[p][1]:
-            up[i] = True
-    # For thumb, orientation varies; above simple test is OK in many cases
-    return {
-        "thumb": up[0],
-        "index": up[1],
-        "middle": up[2],
-        "ring": up[3],
-        "pinky": up[4],
-    }
+def fingers_up(landmarks, handedness=None):
+    """
+    Return booleans for each finger. Accepts optional `handedness` ('Left'/'Right')
+    to improve thumb detection. Backwards compatible with older callers.
+    """
+    # Delegate to the handedness-aware implementation (defined below)
+    try:
+        return fingers_up_with_handedness(landmarks, handedness)
+    except NameError:
+        # Fallback simple implementation if the detailed helper isn't available
+        tips = [4, 8, 12, 16, 20]
+        pips = [3, 6, 10, 14, 18]
+        up = [False] * 5
+        for i, (t, p) in enumerate(zip(tips, pips)):
+            try:
+                if landmarks[t][1] < landmarks[p][1]:
+                    up[i] = True
+            except Exception:
+                up[i] = False
+        return {
+            "thumb": up[0],
+            "index": up[1],
+            "middle": up[2],
+            "ring": up[3],
+            "pinky": up[4],
+        }
 
 
 def majority_vote(buffer):
@@ -247,8 +255,9 @@ def main():
 
             base_options = BaseOptions(model_asset_path=model_path)
             # Use VIDEO running mode for synchronous frame-by-frame detection
+            # Request up to 2 hands so we can obtain handedness for left/right controls
             options = HandLandmarkerOptions(base_options=base_options,
-                                            num_hands=1,
+                                            num_hands=2,
                                             running_mode=RunningMode.VIDEO)
             task_hand_landmarker = HandLandmarker.create_from_options(options)
             mp_draw = None
@@ -258,8 +267,9 @@ def main():
             return
     else:
         mp_hands = mp_solutions.hands
-        hands = mp_hands.Hands(static_image_mode=False, max_num_hands=1,
-                               min_detection_confidence=0.5, min_tracking_confidence=0.5)
+        # allow detection of two hands so handedness info is available
+        hands = mp_hands.Hands(static_image_mode=False, max_num_hands=2,
+                       min_detection_confidence=0.5, min_tracking_confidence=0.5)
         mp_draw = mp_solutions.drawing_utils
 
     cap = cv2.VideoCapture(0)
@@ -276,6 +286,7 @@ def main():
     canvas = np.zeros_like(frame)
 
     show_debug = True
+    show_handedness_debug = False
     gesture_buffer = deque(maxlen=cfg["M_smoothing"])  # last M classified gestures
     last_major = "none"
     last_point = None
@@ -290,6 +301,18 @@ def main():
     session = {"session_id": int(time.time()), "frames": []}
     live_label = "none"
 
+    # Frame-confirmation buffers and debounce for two-hand control
+    N_confirm = int(cfg.get("N_activate", 5))
+    debounce_s = float(cfg.get("debounce_s", 0.35))
+    left_buffer = deque(maxlen=N_confirm)
+    right_buffer = deque(maxlen=N_confirm)
+    left_confirmed = "LOCK"
+    right_confirmed = "none"
+    last_mode_change_ts = 0.0
+    # If True, prefer position (x coordinate) to decide left/right when handedness labels
+    # are missing or appear inconsistent. This helps when the frame is mirrored.
+    force_position_handedness = bool(cfg.get("force_position_handedness", True))
+
     print("Press 'q' to quit, 'c' toggle debug, 'r' start/stop recording, keys 1-5 to label while recording.")
 
     while True:
@@ -298,18 +321,20 @@ def main():
             break
         img = cv2.flip(frame, 1)
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        # Two-hand mapping: produce `left_hand` and `right_hand` landmarks (pixel coords)
         gesture = "none"
         landmarks_px = None
+        left_hand = None
+        right_hand = None
+        res = None
 
         if use_tasks_local:
-            # Tasks API path
             try:
                 from mediapipe.tasks.python import vision as mp_vision
                 if 'TensorImage' in globals() and TensorImage is not None:
                     timg = TensorImage.create_from_array(rgb)
                     detection = task_hand_landmarker.detect_for_video(timg, int(time.time() * 1000))
                 else:
-                    # Try passing numpy array directly, or fallback to mediapipe.Image
                     try:
                         detection = task_hand_landmarker.detect_for_video(rgb, int(time.time() * 1000))
                     except Exception:
@@ -319,69 +344,188 @@ def main():
                             detection = task_hand_landmarker.detect_for_video(mp_img, int(time.time() * 1000))
                         else:
                             raise
+
                 multi_hand_landmarks = getattr(detection, "hand_landmarks", None)
-                if multi_hand_landmarks and len(multi_hand_landmarks) > 0:
-                    hand = multi_hand_landmarks[0]
-                    # hand may have .landmark or be iterable
-                    try:
-                        lm_iter = getattr(hand, "landmark", hand)
-                    except Exception:
-                        lm_iter = hand
-                    lm_list = []
-                    for lm in lm_iter:
-                        # some landmark objects have x,y,z attributes
-                        x = getattr(lm, "x", None)
-                        y = getattr(lm, "y", None)
-                        z = getattr(lm, "z", 0.0)
-                        if x is None or y is None:
-                            continue
-                        lm_list.append((x, y, z))
-                    lm_list_px = [(int(x * W), int(y * H), z) for (x, y, z) in lm_list]
-                    landmarks_px = [(float(x), float(y), float(z)) for (x, y, z) in lm_list_px]
-                    fu = fingers_up(lm_list_px)
-                    # Apply same rule-based classification as legacy API
-                    if not any(fu.values()):
-                        gesture = "erase"
-                    elif fu["index"] and fu["middle"] and not fu["ring"]:
-                        gesture = "selection"
-                    elif fu["index"] and not fu["middle"]:
-                        gesture = "draw"
-                    elif fu["thumb"] and not (fu["index"] or fu["middle"] or fu["ring"] or fu["pinky"]):
-                        gesture = "clear"
-                    elif fu["index"] and fu["middle"] and fu["ring"]:
-                        gesture = "color"
-                    else:
-                        gesture = "none"
-                else:
-                    fu = {"thumb": False, "index": False, "middle": False, "ring": False, "pinky": False}
-            except Exception as e:
-                fu = {"thumb": False, "index": False, "middle": False, "ring": False, "pinky": False}
+                handedness = getattr(detection, "handedness", None) or getattr(detection, "handedness_list", None) or getattr(detection, "handednesses", None)
+                if multi_hand_landmarks:
+                    for i, hand in enumerate(multi_hand_landmarks):
+                        try:
+                            lm_iter = getattr(hand, "landmark", hand)
+                        except Exception:
+                            lm_iter = hand
+                        lm_list = []
+                        for lm in lm_iter:
+                            x = getattr(lm, "x", None)
+                            y = getattr(lm, "y", None)
+                            z = getattr(lm, "z", 0.0)
+                            if x is None or y is None:
+                                continue
+                            lm_list.append((int(x * W), int(y * H), z))
+
+                        # determine label if available
+                        label = None
+                        try:
+                            if handedness and i < len(handedness):
+                                h = handedness[i]
+                                label = getattr(h, "category_name", None) or getattr(h, "label", None)
+                                # some structures include classification list
+                                if label is None:
+                                    cls = getattr(h, "classification", None)
+                                    if cls and len(cls) > 0:
+                                        label = getattr(cls[0], "label", None)
+                        except Exception:
+                            label = None
+
+                        target = None
+                        # decide by position (x mean) and handedness label if available
+                        mean_x = None
+                        try:
+                            xs = [p[0] for p in lm_list]
+                            mean_x = sum(xs) / len(xs)
+                        except Exception:
+                            mean_x = None
+                        side_by_pos = None
+                        if mean_x is not None:
+                            side_by_pos = "left" if mean_x < (W / 2) else "right"
+
+                        if label:
+                            lab = str(label).lower()
+                            label_side = "right" if lab.startswith("r") else "left"
+                            # If configured to prefer position-based handedness and there's a mismatch,
+                            # use the position side because flipping/mirroring can make labels unreliable.
+                            if force_position_handedness and side_by_pos is not None and label_side != side_by_pos:
+                                target = side_by_pos
+                            else:
+                                target = label_side
+                        else:
+                            # fallback: use visual side
+                            if side_by_pos is not None:
+                                target = side_by_pos
+                            else:
+                                # fallback ordering
+                                if right_hand is None:
+                                    target = "right"
+                                else:
+                                    target = "left"
+
+                        if target == "right":
+                            right_hand = [(float(x), float(y), float(z)) for (x, y, z) in lm_list]
+                        else:
+                            left_hand = [(float(x), float(y), float(z)) for (x, y, z) in lm_list]
+                        if show_handedness_debug:
+                            print(f"TASK hand[{i}] mean_x={mean_x} label={label} -> target={target}")
+            except Exception:
+                left_hand = None
+                right_hand = None
         else:
             # Legacy solutions API path
             res = hands.process(rgb)
-            if res.multi_hand_landmarks:
-                hand = res.multi_hand_landmarks[0]
-                lm_list = landmarks_to_pixels(hand.landmark, W, H)
-                landmarks_px = [(float(x), float(y), float(z)) for (x, y, z) in lm_list]
+            mhl = getattr(res, "multi_hand_landmarks", None)
+            mhd = getattr(res, "multi_handedness", None)
+            if mhl:
+                for i, hand_landmarks in enumerate(mhl):
+                    lm_list = landmarks_to_pixels(hand_landmarks.landmark, W, H)
+                    label = None
+                    try:
+                        if mhd and i < len(mhd):
+                            c = mhd[i].classification[0]
+                            label = getattr(c, "label", None) or getattr(c, "category_name", None)
+                    except Exception:
+                        label = None
 
-                fu = fingers_up(lm_list)
+                    # decide by position (x mean) and handedness label if available
+                    mean_x = None
+                    try:
+                        xs = [p[0] for p in lm_list]
+                        mean_x = sum(xs) / len(xs)
+                    except Exception:
+                        mean_x = None
+                    side_by_pos = None
+                    if mean_x is not None:
+                        side_by_pos = "left" if mean_x < (W / 2) else "right"
 
-            # Rule-based classification with priority
-            if not any(fu.values()):
-                gesture = "erase"
-            elif fu["index"] and fu["middle"] and not fu["ring"]:
-                gesture = "selection"
-            elif fu["index"] and not fu["middle"]:
-                gesture = "draw"
-            elif fu["thumb"] and not (fu["index"] or fu["middle"] or fu["ring"] or fu["pinky"]):
-                gesture = "clear"
-            elif fu["index"] and fu["middle"] and fu["ring"]:
-                gesture = "color"
+                    if label:
+                        lab = str(label).lower()
+                        label_side = "right" if lab.startswith("r") else "left"
+                        if force_position_handedness and side_by_pos is not None and label_side != side_by_pos:
+                            target = side_by_pos
+                        else:
+                            target = label_side
+                    else:
+                        if side_by_pos is not None:
+                            target = side_by_pos
+                        else:
+                            target = "right" if right_hand is None else "left"
+
+                    if target == "right":
+                        right_hand = [(float(x), float(y), float(z)) for (x, y, z) in lm_list]
+                    else:
+                        left_hand = [(float(x), float(y), float(z)) for (x, y, z) in lm_list]
+                    if show_handedness_debug:
+                        print(f"SOL hand[{i}] mean_x={mean_x} label={label} -> target={target}")
+
+        # For actions we only use the RIGHT hand landmarks (do not fallback to left)
+        action_landmarks = right_hand
+        landmarks_px = action_landmarks
+
+        # Frame-confirmation and smoothing
+        now = time.time()
+
+        # LEFT candidate (control): OPEN PALM -> UNLOCK, FIST -> LOCK
+        if left_hand:
+            lf = fingers_up(left_hand, "Left")
+            # consider only four fingers for open/closed checks (ignore thumb)
+            four_open = lf["index"] and lf["middle"] and lf["ring"] and lf["pinky"]
+            four_any = lf["index"] or lf["middle"] or lf["ring"] or lf["pinky"]
+            if four_open:
+                left_cand = "UNLOCK"
+            elif not four_any:
+                left_cand = "LOCK"
             else:
-                gesture = "none"
+                left_cand = left_confirmed
+        else:
+            left_cand = "LOCK"
 
-        # smoothing / majority
-        gesture_buffer.append(gesture)
+        left_buffer.append(left_cand)
+        if len(left_buffer) == left_buffer.maxlen and all(x == left_cand for x in left_buffer) and (now - last_mode_change_ts) > debounce_s:
+            if left_confirmed != left_cand:
+                left_confirmed = left_cand
+                last_mode_change_ts = now
+
+        # RIGHT candidate (actions) only when unlocked
+        if right_hand and left_confirmed == "UNLOCK":
+            rf = fingers_up(right_hand, "Right")
+            # ignore thumb when checking for fist/erase
+            four_any_r = rf["index"] or rf["middle"] or rf["ring"] or rf["pinky"]
+            if not four_any_r:
+                right_cand = "erase"
+            elif rf["index"] and rf["middle"] and not rf["ring"]:
+                right_cand = "selection"
+            elif rf["index"] and not rf["middle"]:
+                right_cand = "draw"
+            elif rf["thumb"] and not (rf["index"] or rf["middle"] or rf["ring"] or rf["pinky"]):
+                right_cand = "clear"
+            elif rf["index"] and rf["middle"] and rf["ring"]:
+                right_cand = "color"
+            else:
+                right_cand = "none"
+        else:
+            right_cand = "none"
+
+        right_buffer.append(right_cand)
+        if len(right_buffer) == right_buffer.maxlen and all(x == right_cand for x in right_buffer) and (now - last_mode_change_ts) > debounce_s:
+            if right_confirmed != right_cand:
+                right_confirmed = right_cand
+                last_mode_change_ts = now
+
+        # Determine active major gesture: only when unlocked
+        if left_confirmed == "UNLOCK":
+            major = right_confirmed
+        else:
+            major = "none"
+
+        # smoothing over last M frames to reduce flicker
+        gesture_buffer.append(major)
         major = majority_vote(gesture_buffer)
 
         # recording: append frames only if configured to save all, or if there's
@@ -405,25 +549,31 @@ def main():
         if major != last_major:
             gesture_start_time[major] = now
 
-        # DRAW
-        if major == "draw":
-            if landmarks_px:
-                ix_f, iy_f, _ = landmarks_px[8]
-                ix, iy = int(ix_f), int(iy_f)
-                if last_point is None:
+        # DRAW (use RIGHT hand only and only when LEFT is UNLOCK and RIGHT confirmed DRAW)
+        if left_confirmed == "UNLOCK" and right_confirmed == "draw":
+            if action_landmarks:
+                try:
+                    ix_f, iy_f, _ = action_landmarks[8]
+                    ix, iy = int(ix_f), int(iy_f)
+                    if last_point is None:
+                        last_point = (ix, iy)
+                    # ensure integer tuples for cv2
+                    cv2.line(canvas, (int(last_point[0]), int(last_point[1])), (ix, iy), draw_color, int(cfg["draw_radius"]))
                     last_point = (ix, iy)
-                # ensure integer tuples for cv2
-                cv2.line(canvas, (int(last_point[0]), int(last_point[1])), (ix, iy), draw_color, int(cfg["draw_radius"]))
-                last_point = (ix, iy)
+                except Exception:
+                    last_point = None
         else:
             last_point = None
 
-        # ERASE (continuous)
-        if major == "erase":
-            if landmarks_px:
-                ex_f, ey_f, _ = landmarks_px[8]
-                ex, ey = int(ex_f), int(ey_f)
-                cv2.circle(canvas, (ex, ey), int(cfg["erase_radius"]), (0, 0, 0), -1)
+        # ERASE (continuous) - only when unlocked and right_confirmed==erase
+        if left_confirmed == "UNLOCK" and right_confirmed == "erase":
+            if action_landmarks:
+                try:
+                    ex_f, ey_f, _ = action_landmarks[8]
+                    ex, ey = int(ex_f), int(ey_f)
+                    cv2.circle(canvas, (ex, ey), int(cfg["erase_radius"]), (0, 0, 0), -1)
+                except Exception:
+                    pass
 
         # COLOR change: on release (edge from color -> not color)
         if last_major == "color" and major != "color":
@@ -450,6 +600,23 @@ def main():
             cv2.putText(disp, f"Gesture: {major}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
             cv2.putText(disp, f"LiveLabel: {live_label}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
             cv2.putText(disp, f"Recording: {recording}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
+
+        # LOCK/UNLOCK UI indicator and confirmed mode
+        try:
+            box_w, box_h = 220, 60
+            pad = 12
+            bx0, by0 = pad, pad
+            bx1, by1 = bx0 + box_w, by0 + box_h
+            # background box
+            cv2.rectangle(disp, (bx0, by0), (bx1, by1), (40, 40, 40), -1)
+            status_color = (0, 0, 255) if left_confirmed == "LOCK" else (0, 200, 0)
+            status_text = left_confirmed
+            cv2.putText(disp, status_text, (bx0 + 10, by0 + 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, status_color, 3)
+            # confirmed right mode
+            mode_text = right_confirmed.upper() if right_confirmed and right_confirmed != "none" else "-"
+            cv2.putText(disp, f"Mode: {mode_text}", (bx0 + 120, by0 + 38), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (220, 220, 220), 2)
+        except Exception:
+            pass
 
         # Always show current color swatch and selected color name in the top-right corner
         try:
@@ -487,6 +654,9 @@ def main():
             break
         elif key == ord("c"):
             show_debug = not show_debug
+        elif key == ord("h"):
+            show_handedness_debug = not show_handedness_debug
+            print("Handedness debug:", show_handedness_debug)
         elif key == ord("r"):
             recording = not recording
             if not recording:
