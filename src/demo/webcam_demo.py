@@ -501,11 +501,19 @@ def main():
             rf = fingers_up(right_hand, "Right")
             # ignore thumb when checking for fist/erase
             four_any_r = rf["index"] or rf["middle"] or rf["ring"] or rf["pinky"]
-            # New mapping:
-            # - Index only -> draw
-            # - Index + middle -> erase
-            # - All four fingers down (fist) -> change color
-            if not four_any_r:
+            # detect explicit thumbs-down gesture (thumb tip below IP joint) -> clear all
+            thumb_down = False
+            try:
+                tt_y = right_hand[4][1]
+                ip_y = right_hand[3][1]
+                # require a small pixel threshold to avoid false positives
+                thumb_down = (tt_y - ip_y) > 8
+            except Exception:
+                thumb_down = False
+            # Priority: thumbs-down -> clear_all, then other mappings
+            if thumb_down:
+                right_cand = "clear_all"
+            elif not four_any_r:
                 right_cand = "color"
             elif rf["index"] and rf["middle"] and not rf["ring"]:
                 right_cand = "erase"
@@ -590,6 +598,10 @@ def main():
         if major == "color" and last_major != "color":
             color_idx = (color_idx + 1) % len(colors)
             draw_color = colors[color_idx]
+
+        # CLEAR_ALL: immediate wipe when entering clear_all
+        if major == "clear_all" and last_major != "clear_all":
+            canvas = np.zeros_like(frame)
 
         # CLEAR: require hold
         if major == "clear":
