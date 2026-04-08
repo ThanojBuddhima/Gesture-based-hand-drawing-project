@@ -282,6 +282,7 @@ def main():
     color_idx = 0
     colors = [(0, 255, 0), (0, 0, 255), (255, 0, 0), (0, 255, 255)]
     draw_color = colors[color_idx]
+    color_names = ["green", "red", "blue", "yellow"]
 
     # hold timers
     gesture_start_time = {}
@@ -338,6 +339,19 @@ def main():
                     lm_list_px = [(int(x * W), int(y * H), z) for (x, y, z) in lm_list]
                     landmarks_px = [(float(x), float(y), float(z)) for (x, y, z) in lm_list_px]
                     fu = fingers_up(lm_list_px)
+                    # Apply same rule-based classification as legacy API
+                    if not any(fu.values()):
+                        gesture = "erase"
+                    elif fu["index"] and fu["middle"] and not fu["ring"]:
+                        gesture = "selection"
+                    elif fu["index"] and not fu["middle"]:
+                        gesture = "draw"
+                    elif fu["thumb"] and not (fu["index"] or fu["middle"] or fu["ring"] or fu["pinky"]):
+                        gesture = "clear"
+                    elif fu["index"] and fu["middle"] and fu["ring"]:
+                        gesture = "color"
+                    else:
+                        gesture = "none"
                 else:
                     fu = {"thumb": False, "index": False, "middle": False, "ring": False, "pinky": False}
             except Exception as e:
@@ -394,10 +408,12 @@ def main():
         # DRAW
         if major == "draw":
             if landmarks_px:
-                ix, iy, _ = landmarks_px[8]
+                ix_f, iy_f, _ = landmarks_px[8]
+                ix, iy = int(ix_f), int(iy_f)
                 if last_point is None:
                     last_point = (ix, iy)
-                cv2.line(canvas, last_point, (ix, iy), draw_color, cfg["draw_radius"])
+                # ensure integer tuples for cv2
+                cv2.line(canvas, (int(last_point[0]), int(last_point[1])), (ix, iy), draw_color, int(cfg["draw_radius"]))
                 last_point = (ix, iy)
         else:
             last_point = None
@@ -405,8 +421,9 @@ def main():
         # ERASE (continuous)
         if major == "erase":
             if landmarks_px:
-                ex, ey, _ = landmarks_px[8]
-                cv2.circle(canvas, (int(ex), int(ey)), cfg["erase_radius"], (0, 0, 0), -1)
+                ex_f, ey_f, _ = landmarks_px[8]
+                ex, ey = int(ex_f), int(ey_f)
+                cv2.circle(canvas, (ex, ey), int(cfg["erase_radius"]), (0, 0, 0), -1)
 
         # COLOR change: on release (edge from color -> not color)
         if last_major == "color" and major != "color":
@@ -433,6 +450,31 @@ def main():
             cv2.putText(disp, f"Gesture: {major}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
             cv2.putText(disp, f"LiveLabel: {live_label}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
             cv2.putText(disp, f"Recording: {recording}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
+
+        # Always show current color swatch and selected color name in the top-right corner
+        try:
+            sw_w, sw_h = 90, 50
+            pad = 10
+            x0 = W - sw_w - pad
+            y0 = pad
+            x1 = W - pad
+            y1 = pad + sw_h
+            # filled rectangle swatch
+            cv2.rectangle(disp, (x0, y0), (x1, y1), draw_color, -1)
+            # border
+            cv2.rectangle(disp, (x0, y0), (x1, y1), (255, 255, 255), 1)
+            # color name text left of swatch
+            cname = color_names[color_idx] if color_idx < len(color_names) else str(color_idx)
+            cv2.putText(disp, f"Color: {cname}", (x0 - 200, y0 + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        except Exception:
+            pass
+
+        # Draw a larger, prominent gesture label at the top-left corner
+        try:
+            cv2.putText(disp, f"{major}".upper(), (10, H - (H - 10)), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
+        except Exception:
+            # fallback won't block
+            pass
 
         # draw landmarks for debug (legacy solutions only)
         if (not use_tasks_local) and (res is not None) and getattr(res, "multi_hand_landmarks", None) and show_debug:
