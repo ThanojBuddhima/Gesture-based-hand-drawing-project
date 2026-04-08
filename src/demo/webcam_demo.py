@@ -497,16 +497,18 @@ def main():
             rf = fingers_up(right_hand, "Right")
             # ignore thumb when checking for fist/erase
             four_any_r = rf["index"] or rf["middle"] or rf["ring"] or rf["pinky"]
+            # New mapping:
+            # - Index only -> draw
+            # - Index + middle -> erase
+            # - All four fingers down (fist) -> change color
             if not four_any_r:
-                right_cand = "erase"
+                right_cand = "color"
             elif rf["index"] and rf["middle"] and not rf["ring"]:
-                right_cand = "selection"
+                right_cand = "erase"
             elif rf["index"] and not rf["middle"]:
                 right_cand = "draw"
             elif rf["thumb"] and not (rf["index"] or rf["middle"] or rf["ring"] or rf["pinky"]):
                 right_cand = "clear"
-            elif rf["index"] and rf["middle"] and rf["ring"]:
-                right_cand = "color"
             else:
                 right_cand = "none"
         else:

@@ -147,3 +147,71 @@ Next Immediate Actions
    - Hand tracking
    - Finger detection
    - Basic drawing
+
+--------------------------------------------------
+Two-Hand Control Extension (NEW)
+
+Objective: Improve stability and control by requiring an explicit two-hand interaction: the LEFT hand acts as a lock/unlock control, and the RIGHT hand performs drawing and actions only while UNLOCKED.
+
+System Requirements
+- Use MediaPipe Hands with `max_num_hands = 2` to detect both hands.
+- Identify each hand as `Left` or `Right` using MediaPipe's handedness classification and consistently map logic to the correct physical hand.
+
+Control Logic (LEFT hand)
+- LEFT hand = control switch. Only LEFT determines LOCK / UNLOCK.
+- OPEN PALM (all fingers up) -> system state = UNLOCK.
+- FIST (all fingers down) -> system state = LOCK.
+- If LEFT hand is NOT detected -> system MUST remain LOCKED.
+
+Important Rule
+- When system state is LOCK -> RIGHT hand must NOT perform ANY action (no drawing, no mode change, no processing).
+
+Action Logic (RIGHT hand)
+- Actions operate only when system state == UNLOCK.
+- Index finger up only -> DRAW mode.
+- Index + middle fingers up -> ERASE mode.
+- All fingers down (fist) -> Change color.
+
+Finger Detection Rules
+- For index/middle/ring/pinky: finger is UP when fingertip_y < lower_joint_y (remember image origin is top-left).
+- Thumb detection: determine thumb-up/left/right by comparing x-axis positions relative to hand orientation (use MediaPipe handedness to interpret direction).
+
+Stability Improvements
+- Require frame-based confirmation: a gesture must be observed for at least 5 consecutive frames before confirming and switching modes.
+- Add debounce delay between confirmed mode changes: 0.3–0.5 seconds minimum to prevent rapid toggling.
+
+Drawing Logic
+- Drawing only occurs in DRAW mode (RIGHT hand) and only while system state is UNLOCK.
+- Track previous and current RIGHT-index positions and draw smoothed lines between them (cast to integer pixels for drawing APIs).
+- If system becomes LOCKED, immediately stop drawing and freeze canvas state (until unlocked).
+
+Visual Feedback (UI)
+- On-screen status: show `LOCKED` (red) or `UNLOCKED` (green) in a visible corner.
+- Show current mode label: `DRAW`, `ERASE`, or `SELECT` next to the status.
+- Keep existing color swatch and gesture label; add the LOCK/UNLOCK indicator.
+
+Edge Case Handling
+- If LEFT hand disappears -> immediately set state to LOCK and ignore RIGHT hand actions.
+- If RIGHT hand disappears -> stop drawing (but remain unlocked if LEFT still UNLOCK).
+- Only accept RIGHT-hand actions when BOTH conditions are true:
+  1. LEFT hand is detected
+  2. LEFT hand is in UNLOCK state
+
+Implementation Steps (high level)
+1. Update demo to initialize MediaPipe Hands with `max_num_hands=2` and keep handedness info for each detected hand.
+2. In the main loop, separate detections into `left_hand` and `right_hand` by checking MediaPipe handedness labels.
+3. Implement `fingers_up(hand_landmarks, handedness)` helper that returns bools for each finger using the rules above (thumb logic uses handedness).
+4. Add a `frame_confirmation` buffer per logical state (LEFT control state and RIGHT action mode) to accumulate consecutive frames and only confirm after 5 matches.
+5. Add a `last_mode_change_ts` timestamp and enforce a 0.3–0.5s lockout between confirmed changes.
+6. Wire drawing code to use RIGHT-hand index tip only when confirmed mode == DRAW and system_state == UNLOCK.
+7. Add UI rendering for LOCK status and confirmed mode.
+8. Test the flow and tune thresholds (frame_count and hold times) for responsiveness and stability.
+
+Acceptance Criteria for Two-Hand Extension
+- Left-hand LOCK/UNLOCK reliably controls whether Right-hand actions are accepted.
+- Gestures require 5 consecutive frames to confirm; mode switching has the configured debounce delay.
+- Drawing only occurs when UNLOCK + confirmed DRAW; if left becomes LOCK, drawing stops immediately.
+- UI shows clear LOCK/UNLOCK status and current mode.
+
+Next immediate action after plan update
+- Implement the two-hand logic in `src/demo/webcam_demo.py` (create a feature branch `two-hand` or use existing `test` branch), add unit-level smoke tests if possible, and test interactively.
