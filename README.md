@@ -1,4 +1,4 @@
-# Gesture-based-hand-drawing-project
+# Gesture-Based Air Drawing — Balanced MVP
 
 This repository hosts a real-time webcam air-drawing demo using MediaPipe hand landmarks and OpenCV. The project prioritizes a fast rule-based MVP for gesture control, then supports dataset collection and a simple ML pipeline for later improvements.
 
@@ -38,59 +38,91 @@ Runtime controls
 - `c` — toggle debug overlay
 - `h` — toggle handedness debug prints (terminal)
 - `r` — start/stop recording (sessions saved to `data/raw/`)
-- `1`-`5` — set live label while recording
+# Gesture-Based Air Drawing
 
-Gesture mapping and two-hand control
+A lightweight, real-time webcam air-drawing demo that uses MediaPipe hand landmarks and OpenCV. The project focuses on a robust rule-based MVP for gesture control, with utilities for data collection and a simple training pipeline for future improvements.
 
-Left (control) hand — locks/unlocks system
-- OPEN PALM (index/middle/ring/pinky up) -> `UNLOCK`
-- FIST (index..pinky down) -> `LOCK`
-- If LEFT is not detected -> remain `LOCKED` (safety)
+Key features
 
-Right (action) hand — actions only when LEFT == `UNLOCK`
-- INDEX (index finger up only) -> `DRAW` (track index tip)
-- INDEX + MIDDLE -> `ERASE` (continuous)
-- FIST (all four fingers down) -> `CHANGE COLOR` (cycles immediately)
-- THUMBS-DOWN (right-hand thumb tip below IP joint) -> `CLEAR ALL` (immediate canvas wipe)
-- THUMB UP -> `CLEAR` (if implemented as a hold action)
+- Two-hand control: left hand locks/unlocks the system; right hand performs drawing and editing actions only when unlocked.
+- Rule-based gesture recognition with temporal smoothing and confirmation to reduce accidental activations.
+- Live recording mode for dataset collection (per-frame landmark JSON output).
+- Simple configurable UI with LOCK/UNLOCK status, color swatch, and fingertip markers.
 
-Notes on gesture detection
+Repository structure
 
-- Fingers (index/middle/ring/pinky) are considered "up" when the fingertip y is above the corresponding lower joint y (image origin is top-left).
-- Thumb detection respects `handedness` to handle left/right thumb orientation.
-- The demo applies smoothing and confirmation: a gesture must be present for `N_activate` frames and debounced by `debounce_s` seconds.
+- `src/demo/webcam_demo.py` — real-time demo, gesture logic and UI.
+- `src/data/` — data collection and preprocessing utilities.
+- `src/train/` — training helpers and feature preparation scripts.
+- `configs/` — default runtime configuration (e.g., `default.yaml`).
+- `docs/` — project documentation (planning and requirements).
+- `models/` — (optional) local MediaPipe Task model files (not tracked by default).
+- `data/raw/`, `data/processed/` — captured sessions and processed features.
 
-Configuration
+Quick start (recommended)
 
-If present, `configs/default.yaml` overrides defaults. Useful keys:
+1. Create and activate a Python virtual environment:
 
-- `N_activate`: frames to confirm a gesture (default 5)
-- `debounce_s`: minimal seconds between confirmed mode changes (default ~0.3)
-- `M_smoothing`: majority vote window size
-- `draw_radius`, `erase_radius`: sizes for drawing and erasing
-- `T_clear_hold`: hold time for clear actions (seconds)
-- `force_position_handedness`: prefer visual position (left/right) when MediaPipe labels are inconsistent
+```bash
+python -m venv venv
+source venv/bin/activate
+```
+
+2. Install dependencies (use `requirements.txt`):
+
+```bash
+pip install -r requirements.txt
+```
+
+3. Run the demo:
+
+```bash
+venv/bin/python src/demo/webcam_demo.py
+```
+
+Runtime keys
+
+- `q` — quit
+- `c` — toggle debug overlay
+- `h` — toggle handedness debug prints (console)
+- `r` — start/stop recording (saves JSON to `data/raw/`)
+- `1`–`5` — set live label while recording
+
+Gesture summary (high level)
+
+Left hand (control)
+- OPEN PALM → UNLOCK
+- FIST → LOCK
+
+Right hand (actions, only when UNLOCKED)
+- INDEX → DRAW (index fingertip is cursor)
+- INDEX + MIDDLE → ERASE
+- FIST (index..pinky down) → CHANGE COLOR
+- THUMBS-DOWN → CLEAR ALL (destructive — configurable hold/confirmation)
+
+Notes on detection & configuration
+
+- Fingers are detected using landmark geometry; thumb logic is handedness-aware.
+- Temporal smoothing and confirmation are configured via `configs/default.yaml` (keys like `N_activate`, `debounce_s`, `M_smoothing`).
+- If MediaPipe handedness labels appear inconsistent, `force_position_handedness` can prefer visual left/right positions.
 
 Data collection & training
 
-- `src/data/collect.py` collects landmark frames with live labels (saved into `data/raw/`).
-- `src/train/prepare_data.py` extracts features to `data/processed/features.npz`.
-- Recommended ML baseline: Random Forest or small MLP trained on landmark features.
+- Use `src/data/collect.py` to record labeled sessions into `data/raw/`.
+- `src/train/prepare_data.py` prepares features (e.g., `data/processed/features.npz`) for training a lightweight classifier.
 
-UI & Visual Feedback
+Development & contribution
 
-- Prominent LOCK/UNLOCK status box and separate Mode box (single source of truth for current action).
-- Color swatch at the top-right updates immediately when color changes.
-- Pencil/eraser markers appear at the fingertip during draw/erase operations.
-- Debug overlay (optional) shows `LiveLabel` and `Recording` for collection.
+- Work on feature branches off `test` and open pull requests to `main` when ready.
+- Keep changes focused and provide a short local test plan in the PR description.
 
 Troubleshooting
 
-- If MediaPipe Tasks model is required but missing, add `models/hand_landmarker.task` or install a `mediapipe` package with Solutions API.
-- If handedness appears swapped (mirrored camera), set `force_position_handedness: true` in `configs/default.yaml`.
-- If thumbs-down clears unexpectedly, I can make the check normalized by hand bbox height or require a short hold.
+- Missing MediaPipe model: add `models/hand_landmarker.task` or install the appropriate `mediapipe` package.
+- If gestures are unstable: tune `N_activate`, `M_smoothing`, and `debounce_s` in `configs/default.yaml`.
 
-Development notes
+License & attribution
 
-- Branch from `test` for features. Keep commits small and test locally before pushing.
-- The project was developed and tested in a local venv. Adjust package versions as needed.
+This repository is provided as-is for demonstration and research. Include an appropriate open-source license file if you intend to distribute or publish the project.
+
+For details on gesture semantics and development notes, see `docs/plan.me` and `docs/requirements.md`.
