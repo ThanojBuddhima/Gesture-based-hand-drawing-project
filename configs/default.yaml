@@ -1,8 +1,10 @@
-M_smoothing: 5
-N_activate: 3
+M_smoothing: 7
+N_activate: 5
 N_deactivate: 3
 erase_radius: 30
 draw_radius: 4
 T_clear_hold: 1.0
 T_erase_hold: 0.6
+debounce_s: 0.35
+force_position_handedness: true
 save_only_labeled_frames: true
