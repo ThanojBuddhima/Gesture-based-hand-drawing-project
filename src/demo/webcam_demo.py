@@ -315,6 +315,10 @@ def main():
 
     print("Press 'q' to quit, 'c' toggle debug, 'r' start/stop recording, keys 1-5 to label while recording.")
 
+    # marker positions for UI icons
+    draw_marker_pos = None
+    erase_marker_pos = None
+
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -562,10 +566,12 @@ def main():
                     # ensure integer tuples for cv2
                     cv2.line(canvas, (int(last_point[0]), int(last_point[1])), (ix, iy), draw_color, int(cfg["draw_radius"]))
                     last_point = (ix, iy)
+                    draw_marker_pos = (ix, iy)
                 except Exception:
                     last_point = None
         else:
             last_point = None
+            draw_marker_pos = None
 
         # ERASE (continuous) - only when unlocked and right_confirmed==erase
         if left_confirmed == "UNLOCK" and right_confirmed == "erase":
@@ -574,12 +580,14 @@ def main():
                     ex_f, ey_f, _ = action_landmarks[8]
                     ex, ey = int(ex_f), int(ey_f)
                     cv2.circle(canvas, (ex, ey), int(cfg["erase_radius"]), (0, 0, 0), -1)
+                    erase_marker_pos = (ex, ey)
                 except Exception:
                     pass
+        else:
+            erase_marker_pos = None
 
-        # COLOR change: on release (edge from color -> not color)
-        if last_major == "color" and major != "color":
-            # switch color
+        # COLOR change: immediate on entering 'color' (rising edge)
+        if major == "color" and last_major != "color":
             color_idx = (color_idx + 1) % len(colors)
             draw_color = colors[color_idx]
 
@@ -598,25 +606,37 @@ def main():
 
         disp = cv2.addWeighted(img, 0.5, canvas, 0.5, 0)
 
+        # show_debug area: position beneath status boxes to avoid overlap with window chrome
+        # keep debug minimal: show live label and recording only (mode is shown in the Mode box)
         if show_debug:
-            cv2.putText(disp, f"Gesture: {major}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-            cv2.putText(disp, f"LiveLabel: {live_label}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
-            cv2.putText(disp, f"Recording: {recording}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
+            dbg_x = 10
+            dbg_y = 140
+            line_h = 28
+            cv2.putText(disp, f"LiveLabel: {live_label}", (dbg_x, dbg_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2)
+            cv2.putText(disp, f"Recording: {recording}", (dbg_x, dbg_y + line_h), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
 
-        # LOCK/UNLOCK UI indicator and confirmed mode
+        # LOCK/UNLOCK UI indicator and confirmed mode (separate boxes, lower to avoid chrome overlap)
         try:
-            box_w, box_h = 220, 60
-            pad = 12
-            bx0, by0 = pad, pad
-            bx1, by1 = bx0 + box_w, by0 + box_h
-            # background box
-            cv2.rectangle(disp, (bx0, by0), (bx1, by1), (40, 40, 40), -1)
-            status_color = (0, 0, 255) if left_confirmed == "LOCK" else (0, 200, 0)
-            status_text = left_confirmed
-            cv2.putText(disp, status_text, (bx0 + 10, by0 + 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, status_color, 3)
-            # confirmed right mode
+            pad_x = 12
+            pad_y = 50  # shift down to clear window titlebar area
+            # Status box (left)
+            status_w, status_h = 200, 64
+            sx0, sy0 = pad_x, pad_y
+            sx1, sy1 = sx0 + status_w, sy0 + status_h
+            cv2.rectangle(disp, (sx0, sy0), (sx1, sy1), (30, 30, 30), -1)
+            cv2.rectangle(disp, (sx0, sy0), (sx1, sy1), (200, 200, 200), 1)
+            status_color = (0, 0, 220) if left_confirmed == "LOCK" else (0, 200, 0)
+            status_text = "LOCKED" if left_confirmed == "LOCK" else "UNLOCKED"
+            cv2.putText(disp, status_text, (sx0 + 10, sy0 + 44), cv2.FONT_HERSHEY_DUPLEX, 1.0, status_color, 3)
+
+            # Mode box (right of status)
+            mode_w, mode_h = 160, 40
+            mx0, my0 = sx1 + 10, pad_y + 12
+            mx1, my1 = mx0 + mode_w, my0 + mode_h
+            cv2.rectangle(disp, (mx0, my0), (mx1, my1), (40, 40, 40), -1)
+            cv2.rectangle(disp, (mx0, my0), (mx1, my1), (180, 180, 180), 1)
             mode_text = right_confirmed.upper() if right_confirmed and right_confirmed != "none" else "-"
-            cv2.putText(disp, f"Mode: {mode_text}", (bx0 + 120, by0 + 38), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (220, 220, 220), 2)
+            cv2.putText(disp, f"Mode: {mode_text}", (mx0 + 8, my0 + 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (220, 220, 220), 2)
         except Exception:
             pass
 
@@ -634,15 +654,31 @@ def main():
             cv2.rectangle(disp, (x0, y0), (x1, y1), (255, 255, 255), 1)
             # color name text left of swatch
             cname = color_names[color_idx] if color_idx < len(color_names) else str(color_idx)
-            cv2.putText(disp, f"Color: {cname}", (x0 - 200, y0 + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            cv2.putText(disp, f"Color: {cname}", (x0 - 200, y0 + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         except Exception:
             pass
 
-        # Draw a larger, prominent gesture label at the top-left corner
+        # (Removed large bottom-left gesture label to avoid duplication with Mode box)
+
+        # Draw markers for active tools (pencil/eraser) at the action point
         try:
-            cv2.putText(disp, f"{major}".upper(), (10, H - (H - 10)), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
+            if draw_marker_pos and major == "draw":
+                dx, dy = draw_marker_pos
+                # pencil marker: small filled circle with a tiny tip triangle
+                cv2.circle(disp, (dx, dy), 10, (255, 255, 255), -1)
+                cv2.circle(disp, (dx, dy), 8, draw_color, -1)
+                # tip: small black triangle below the point
+                pts = np.array([[dx + 6, dy + 6], [dx - 6, dy + 6], [dx, dy + 12]], np.int32)
+                cv2.fillConvexPoly(disp, pts, (30, 30, 30))
+            if erase_marker_pos and major == "erase":
+                ex, ey = erase_marker_pos
+                # eraser marker: small rounded rectangle (approx) in white with border
+                ew, eh = 26, 16
+                rx0, ry0 = ex - ew // 2, ey - eh // 2
+                rx1, ry1 = ex + ew // 2, ey + eh // 2
+                cv2.rectangle(disp, (rx0, ry0), (rx1, ry1), (245, 245, 245), -1)
+                cv2.rectangle(disp, (rx0, ry0), (rx1, ry1), (60, 60, 60), 1)
         except Exception:
-            # fallback won't block
             pass
 
         # draw landmarks for debug (legacy solutions only)
