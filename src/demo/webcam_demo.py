@@ -338,6 +338,19 @@ def main():
                     lm_list_px = [(int(x * W), int(y * H), z) for (x, y, z) in lm_list]
                     landmarks_px = [(float(x), float(y), float(z)) for (x, y, z) in lm_list_px]
                     fu = fingers_up(lm_list_px)
+                    # Apply same rule-based classification as legacy API
+                    if not any(fu.values()):
+                        gesture = "erase"
+                    elif fu["index"] and fu["middle"] and not fu["ring"]:
+                        gesture = "selection"
+                    elif fu["index"] and not fu["middle"]:
+                        gesture = "draw"
+                    elif fu["thumb"] and not (fu["index"] or fu["middle"] or fu["ring"] or fu["pinky"]):
+                        gesture = "clear"
+                    elif fu["index"] and fu["middle"] and fu["ring"]:
+                        gesture = "color"
+                    else:
+                        gesture = "none"
                 else:
                     fu = {"thumb": False, "index": False, "middle": False, "ring": False, "pinky": False}
             except Exception as e:
@@ -394,10 +407,12 @@ def main():
         # DRAW
         if major == "draw":
             if landmarks_px:
-                ix, iy, _ = landmarks_px[8]
+                ix_f, iy_f, _ = landmarks_px[8]
+                ix, iy = int(ix_f), int(iy_f)
                 if last_point is None:
                     last_point = (ix, iy)
-                cv2.line(canvas, last_point, (ix, iy), draw_color, cfg["draw_radius"])
+                # ensure integer tuples for cv2
+                cv2.line(canvas, (int(last_point[0]), int(last_point[1])), (ix, iy), draw_color, int(cfg["draw_radius"]))
                 last_point = (ix, iy)
         else:
             last_point = None
@@ -405,8 +420,9 @@ def main():
         # ERASE (continuous)
         if major == "erase":
             if landmarks_px:
-                ex, ey, _ = landmarks_px[8]
-                cv2.circle(canvas, (int(ex), int(ey)), cfg["erase_radius"], (0, 0, 0), -1)
+                ex_f, ey_f, _ = landmarks_px[8]
+                ex, ey = int(ex_f), int(ey_f)
+                cv2.circle(canvas, (ex, ey), int(cfg["erase_radius"]), (0, 0, 0), -1)
 
         # COLOR change: on release (edge from color -> not color)
         if last_major == "color" and major != "color":
