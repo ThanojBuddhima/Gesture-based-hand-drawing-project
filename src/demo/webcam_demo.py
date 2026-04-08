@@ -282,6 +282,7 @@ def main():
     color_idx = 0
     colors = [(0, 255, 0), (0, 0, 255), (255, 0, 0), (0, 255, 255)]
     draw_color = colors[color_idx]
+    color_names = ["green", "red", "blue", "yellow"]
 
     # hold timers
     gesture_start_time = {}
@@ -449,6 +450,31 @@ def main():
             cv2.putText(disp, f"Gesture: {major}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
             cv2.putText(disp, f"LiveLabel: {live_label}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
             cv2.putText(disp, f"Recording: {recording}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
+
+        # Always show current color swatch and selected color name in the top-right corner
+        try:
+            sw_w, sw_h = 90, 50
+            pad = 10
+            x0 = W - sw_w - pad
+            y0 = pad
+            x1 = W - pad
+            y1 = pad + sw_h
+            # filled rectangle swatch
+            cv2.rectangle(disp, (x0, y0), (x1, y1), draw_color, -1)
+            # border
+            cv2.rectangle(disp, (x0, y0), (x1, y1), (255, 255, 255), 1)
+            # color name text left of swatch
+            cname = color_names[color_idx] if color_idx < len(color_names) else str(color_idx)
+            cv2.putText(disp, f"Color: {cname}", (x0 - 200, y0 + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        except Exception:
+            pass
+
+        # Draw a larger, prominent gesture label at the top-left corner
+        try:
+            cv2.putText(disp, f"{major}".upper(), (10, H - (H - 10)), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
+        except Exception:
+            # fallback won't block
+            pass
 
         # draw landmarks for debug (legacy solutions only)
         if (not use_tasks_local) and (res is not None) and getattr(res, "multi_hand_landmarks", None) and show_debug:
