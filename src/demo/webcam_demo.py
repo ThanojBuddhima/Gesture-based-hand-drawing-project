@@ -160,83 +160,6 @@ def majority_vote(buffer):
     return cnt.most_common(1)[0][0]
 
 
-def recognize_and_replace(canvas, stroke_pts, color=(0, 255, 0)):
-    """
-    Analyze `stroke_pts` (list of (x,y)) and replace the rough stroke on `canvas`
-    with a best-fit ideal shape: straight line, circle, triangle, or rectangle.
-    This is a lightweight heuristic-based recognizer suitable for the demo.
-    """
-    if not stroke_pts or len(stroke_pts) < 6:
-        return
-
-    pts = np.array(stroke_pts, dtype=np.int32)
-    # bounding box
-    x, y, w, h = cv2.boundingRect(pts)
-    # expand slightly
-    pad = 6
-    bx0, by0 = max(0, x - pad), max(0, y - pad)
-    bx1, by1 = min(canvas.shape[1], x + w + pad), min(canvas.shape[0], y + h + pad)
-
-    # create contour for approxPoly
-    contour = pts.reshape((-1, 1, 2)).astype(np.int32)
-    peri = cv2.arcLength(contour, False)
-    if peri <= 0:
-        return
-    eps = max(2.0, 0.02 * peri)
-    approx = cv2.approxPolyDP(contour, eps, False)
-
-    # try circle fit: minEnclosingCircle + check radial residual
-    (cx, cy), radius = cv2.minEnclosingCircle(pts)
-    dists = np.sqrt(((pts - np.array([cx, cy])) ** 2).sum(axis=1))
-    mean_r = float(dists.mean())
-    std_r = float(dists.std())
-
-    # try line fit using fitLine
-    [vx, vy, x0, y0] = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
-    # distances from line
-    diff = pts - np.array([x0, y0])
-    cross = np.abs(vx * diff[:, 1] - vy * diff[:, 0])
-    line_resid = float(np.max(cross))
-
-    shape_drawn = False
-    # Heuristics order: line -> circle -> polygon (triangle/rect)
-    # Line detection: very small max residual relative to bbox diagonal
-    diag = np.hypot(w, h)
-    if diag > 0 and (line_resid < max(4.0, 0.03 * diag)):
-        # draw straight line between stroke endpoints
-        p0 = tuple(pts[0])
-        p1 = tuple(pts[-1])
-        cv2.line(canvas, p0, p1, color, int(max(2, min(6, int(diag / 80)))))
-        shape_drawn = True
-    else:
-        # circle detection: low radial std relative to mean radius
-        if mean_r > 8 and (std_r / mean_r) < 0.20:
-            cv2.circle(canvas, (int(cx), int(cy)), int(round(mean_r)), color, int(max(2, int(mean_r / 20))))
-            shape_drawn = True
-        else:
-            # polygon approx
-            if approx is not None:
-                n = len(approx)
-                if n == 3:
-                    tri = approx.reshape((3, 2))
-                    cv2.polylines(canvas, [tri], True, color, int(max(2, min(6, int(diag / 80)))))
-                    shape_drawn = True
-                elif n == 4:
-                    # use minAreaRect to get nice rectangle (handles rotated)
-                    rect = cv2.minAreaRect(pts)
-                    box = cv2.boxPoints(rect).astype(np.int32)
-                    cv2.polylines(canvas, [box], True, color, int(max(2, min(6, int(diag / 80)))))
-                    shape_drawn = True
-
-    # If no shape recognized, as fallback smooth the stroke by drawing an anti-aliased polyline
-    if not shape_drawn:
-        smooth = cv2.approxPolyDP(contour, max(2.0, 0.01 * peri), False)
-        poly = smooth.reshape((-1, 2))
-        for i in range(len(poly) - 1):
-            cv2.line(canvas, tuple(poly[i]), tuple(poly[i + 1]), color, int(max(2, int(diag / 80))))
-
-
-
 def save_session(session, out_dir="data/raw"):
     os.makedirs(out_dir, exist_ok=True)
     ts = int(time.time())
@@ -248,8 +171,6 @@ def save_session(session, out_dir="data/raw"):
 
 def main():
     cfg = load_config("configs/default.yaml")
-    # time (seconds) to wait after finishing a stroke before auto-recognizing a shape
-    T_shape_hold = float(cfg.get("T_shape_hold", 2.0))
 
     # Initialize hand detector depending on available MediaPipe API
     hands = None
@@ -397,10 +318,6 @@ def main():
     # marker positions for UI icons
     draw_marker_pos = None
     erase_marker_pos = None
-    # stroke capture for shape recognition
-    current_stroke = []
-    stroke_end_time = None
-    stroke_processed = False
 
     while True:
         ret, frame = cap.read()
@@ -658,19 +575,11 @@ def main():
                     cv2.line(canvas, (int(last_point[0]), int(last_point[1])), (ix, iy), draw_color, int(cfg["draw_radius"]))
                     last_point = (ix, iy)
                     draw_marker_pos = (ix, iy)
-                    # append to current stroke
-                    current_stroke.append((ix, iy))
-                    # reset stroke end timer when actively drawing
-                    stroke_end_time = None
-                    stroke_processed = False
                 except Exception:
                     last_point = None
         else:
             last_point = None
             draw_marker_pos = None
-            # if we have a stroke and it's just ended, mark end time
-            if current_stroke and stroke_end_time is None:
-                stroke_end_time = time.time()
 
         # ERASE (continuous) - only when unlocked and right_confirmed==erase
         if left_confirmed == "UNLOCK" and right_confirmed == "erase":
@@ -813,16 +722,6 @@ def main():
                 print("Live label set to", live_label)
 
         last_major = major
-
-        # After main loop actions: check stroke end timing and run recognition
-        if stroke_end_time is not None and (time.time() - stroke_end_time) >= T_shape_hold and (not stroke_processed):
-            try:
-                recognize_and_replace(canvas, current_stroke, draw_color)
-            except Exception as e:
-                print("Shape recognition error:", e)
-            # clear stroke buffer and mark processed
-            current_stroke = []
-            stroke_processed = True
 
     cap.release()
     cv2.destroyAllWindows()
